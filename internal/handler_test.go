@@ -16,15 +16,77 @@ func TestDateTimeHandler(t *testing.T) {
 		return time.Unix(unixRefTime, 0)
 	}
 
-	req, err := http.NewRequest(http.MethodGet, "/datetime", nil)
-	assert.NoError(t, err)
+	rfc3339TS := "{\"timestamp\":\"2006-01-02T22:04:05Z\"}\n"
+	unixTS := "{\"timestamp\":1136239445}\n"
 
-	h := http.HandlerFunc(DateTimeHandler)
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, req)
-	assert.Equal(t, http.StatusOK, rr.Code, "return code was %d not %d", rr.Code, http.StatusOK)
-	assert.Equal(t, "{\"timestamp\":1136239445}\n", rr.Body.String(), "expected body to be empty")
+	tests := []struct {
+		name         string
+		argName      string
+		argVal       string
+		expectedBody string
+	}{
+		{
+			"no format",
+			"",
+			"",
+			rfc3339TS,
+		},
+		{
+			"format=rfc3339",
+			"format",
+			"rfc3339",
+			rfc3339TS,
+		},
+		{
+			"Format=rfc3339",
+			"Format",
+			"rfc3339",
+			rfc3339TS,
+		},
+		{
+			"format=x",
+			"format",
+			"x",
+			rfc3339TS,
+		},
+		{
+			"format=unix",
+			"format",
+			"unix",
+			unixTS,
+		},
+		{
+			"format=UNIX",
+			"format",
+			"UNIX",
+			unixTS,
+		},
+		{
+			"format=UnIx",
+			"format",
+			"UnIx",
+			unixTS,
+		},
+	}
 
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, "/datetime", nil)
+			assert.NoError(t, err)
+
+			q := req.URL.Query()
+			if tt.argName != "" {
+				q.Add(tt.argName, tt.argVal)
+				req.URL.RawQuery = q.Encode()
+			}
+
+			h := http.HandlerFunc(DateTimeHandler)
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			assert.Equal(t, http.StatusOK, rr.Code, "return code was %d not %d", rr.Code, http.StatusOK)
+			assert.Equal(t, tt.expectedBody, rr.Body.String(), "expected body to be empty")
+		})
+	}
 }
 
 func TestHealthHandler(t *testing.T) {

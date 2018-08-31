@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -11,14 +12,24 @@ import (
 // this could go wrong with parallel tests
 var now = time.Now
 
-func DateTimeHandler(w http.ResponseWriter, r *http.Request) {
+// default format will be RFC3339/ISO8601 which seems to be the preferred format
+// for JSON according to most docs
+func getTimestamp(format string) json.Marshaler {
 	ts := now()
-	uts := UnixTimestamp(ts)
+	ts = ts.UTC()
+	if strings.ToLower(format) == "unix" {
+		return UnixTimestamp(ts)
+	}
+	return ts
+}
+
+func DateTimeHandler(w http.ResponseWriter, r *http.Request) {
+	ts := getTimestamp(r.URL.Query().Get("format"))
 
 	result := struct {
 		Timestamp interface{} `json:"timestamp"`
 	}{
-		uts,
+		ts,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
