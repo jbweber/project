@@ -33,7 +33,7 @@ func (r *requestDetails) String() string {
 	return fmt.Sprintf("DNSDone: %v, TTFB: %v, TTLB: %v, C: %v, D: %v, F: %v", r.DNSDone, r.GotFirstResponseByte, r.GotLastResponseByte, r.Canceled, r.Deadline, r.Failed)
 }
 
-func newHTTPClient() *http.Client {
+func newHTTPClient(ctx context.Context, wg *sync.WaitGroup) *http.Client {
 	// create a transport here to facilitate setting MaxIdleConnsPerHost
 	// if we don't set this we could exhaust ports because of TIME_WAIT
 	// default timeout for TIME_WAIT on linux is 120s
@@ -51,6 +51,26 @@ func newHTTPClient() *http.Client {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
+
+	go func(ctx context.Context, wg *sync.WaitGroup, transport *http.Transport) {
+		wg.Add(1)
+		defer wg.Done()
+
+		loop := time.After(10 * time.Second)
+		log.Println("starting closer thread")
+		for {
+			select {
+			case <-loop:
+				log.Println("closing idle connections")
+				transport.CloseIdleConnections()
+				loop = time.After(10 * time.Second)
+			case <-ctx.Done():
+				log.Println("received completion signal")
+				return
+			default:
+			}
+		}
+	}(ctx, wg, transport)
 
 	return &http.Client{Transport: transport}
 }
@@ -170,10 +190,11 @@ func main() {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 
-	// create client
 	// create WaitGroup to keep track of go routines
-	client := newHTTPClient()
 	var wg sync.WaitGroup
+
+	// create client
+	client := newHTTPClient(ctx, &wg)
 
 	// start executing
 	for i := 1; i <= requestsPerSecond; i++ {
