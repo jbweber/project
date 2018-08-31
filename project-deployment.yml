@@ -12,7 +12,7 @@ spec:
     spec:
       containers:
         - name: project
-          image: jbweber/project:v0.2.0
+          image: jbweber/project:${VERSION}
           ports:
             - name: http
               containerPort: 8000
