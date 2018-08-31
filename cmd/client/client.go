@@ -39,7 +39,9 @@ func newHTTPClient(ctx context.Context, wg *sync.WaitGroup, flush time.Duration)
 	// create a transport here to facilitate setting MaxIdleConnsPerHost
 	// if we don't set this we could exhaust ports because of TIME_WAIT
 	// default timeout for TIME_WAIT on linux is 120s
-	// SO_LINGER 0?
+	// SO_LINGER 0 isn't really an option with connection: close semantics
+	// but could be useful when we exit with a cancel if we allow thousands
+	// of connections in the pool
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
