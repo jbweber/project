@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -33,7 +35,7 @@ func (r *requestDetails) String() string {
 	return fmt.Sprintf("DNSDone: %v, TTFB: %v, TTLB: %v, C: %v, D: %v, F: %v", r.DNSDone, r.GotFirstResponseByte, r.GotLastResponseByte, r.Canceled, r.Deadline, r.Failed)
 }
 
-func newHTTPClient(ctx context.Context, wg *sync.WaitGroup) *http.Client {
+func newHTTPClient(ctx context.Context, wg *sync.WaitGroup, flush time.Duration) *http.Client {
 	// create a transport here to facilitate setting MaxIdleConnsPerHost
 	// if we don't set this we could exhaust ports because of TIME_WAIT
 	// default timeout for TIME_WAIT on linux is 120s
@@ -52,30 +54,30 @@ func newHTTPClient(ctx context.Context, wg *sync.WaitGroup) *http.Client {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 
-	go func(ctx context.Context, wg *sync.WaitGroup, transport *http.Transport) {
+	go func(ctx context.Context, wg *sync.WaitGroup, transport *http.Transport, flush time.Duration) {
 		wg.Add(1)
 		defer wg.Done()
 
-		loop := time.After(10 * time.Second)
-		log.Println("starting closer thread")
+		loop := time.After(flush)
+		log.Println("INFO: starting http.Transport.CloseIdleConnections flush routine")
 		for {
 			select {
 			case <-loop:
-				log.Println("closing idle connections")
+				log.Println("INFO: executing http.Transport.CloseIdleConnections flush")
 				transport.CloseIdleConnections()
-				loop = time.After(10 * time.Second)
+				loop = time.After(flush)
 			case <-ctx.Done():
-				log.Println("received completion signal")
+				log.Println("INFO: http.Transport.CloseIdleConnections flush routine received completion signal")
 				return
 			default:
 			}
 		}
-	}(ctx, wg, transport)
+	}(ctx, wg, transport, flush)
 
 	return &http.Client{Transport: transport}
 }
 
-func do(ctx context.Context, client *http.Client) {
+func do(ctx context.Context, client *http.Client, endpoint string) {
 
 	// allow argument for url to call
 	// probably include channel to send timing results
@@ -97,7 +99,7 @@ func do(ctx context.Context, client *http.Client) {
 		},
 	}
 
-	req, err := http.NewRequest(http.MethodGet, "http://localhost:8000/datetime", nil)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -125,8 +127,7 @@ func do(ctx context.Context, client *http.Client) {
 				details.Deadline = true
 			}
 		}
-		//	log.Println(err)
-		log.Println(details)
+		log.Printf("INFO: %v", details)
 		return
 	}
 	defer resp.Body.Close()
@@ -142,10 +143,10 @@ func do(ctx context.Context, client *http.Client) {
 	details.GotLastResponseByte = time.Since(details.Start)
 
 	// send me via a channel
-	log.Println(details)
+	log.Printf("INFO: %v", details)
 }
 
-func executor(ctx context.Context, wg *sync.WaitGroup, client *http.Client) {
+func executor(ctx context.Context, wg *sync.WaitGroup, client *http.Client, endpoint string) {
 	wg.Add(1)
 	defer wg.Done()
 
@@ -160,21 +161,55 @@ func executor(ctx context.Context, wg *sync.WaitGroup, client *http.Client) {
 			// we could probably just spawn the request in the background here, but for now
 			// requests are quick enough we're feeling okay
 			// if we propagate our context maybe it will be okay?
-			do(ctx, client)
+			do(ctx, client, endpoint)
 			loop = time.After(1 * time.Second)
 		case <-ctx.Done():
-			log.Println("received completion signal")
+			log.Println("INFO: executor routine received completion signal")
 			return
 		default:
 		}
 	}
 }
 
+func commandLine(endpoint *string, flush *time.Duration, rps *int) error {
+
+	flag.DurationVar(flush, "flush", 60*time.Second, "specifies how often to flush using a duration; default 60s")
+	flag.IntVar(rps, "rps", 2, "specifies requests per second; default 2")
+	flag.StringVar(endpoint, "url", "", "specifies the url to query")
+
+	flag.Parse()
+
+	if *endpoint == "" {
+		return fmt.Errorf("url argument cannot be empty")
+	}
+
+	// TODO
+	// this seems to do a crappy job parsing the url, look into it more
+	_, err := url.Parse(*endpoint)
+	if err != nil {
+		return fmt.Errorf("url argument cannot be parsed: %v", err)
+	}
+
+	// arbitrary right now
+	if *rps < 1 || *rps > 10 {
+		return fmt.Errorf("rps argument must be between 1 and 10, got %v", *rps)
+	}
+
+	return nil
+}
+
 func main() {
-
-	requestsPerSecond := 10
-
 	log.SetFlags(log.Ldate | log.Ltime | log.LUTC)
+
+	var endpoint string
+	var flush time.Duration
+	var rps int
+
+	err := commandLine(&endpoint, &flush, &rps)
+	if err != nil {
+		log.Fatalf("ERROR: %v", err)
+	}
+
 	log.Println("INFO: Starting application...")
 
 	// signal handling
@@ -194,12 +229,12 @@ func main() {
 	var wg sync.WaitGroup
 
 	// create client
-	client := newHTTPClient(ctx, &wg)
+	client := newHTTPClient(ctx, &wg, flush)
 
 	// start executing
-	for i := 1; i <= requestsPerSecond; i++ {
+	for i := 1; i <= rps; i++ {
 		log.Printf("INFO: starting executor %v", i)
-		go executor(ctx, &wg, client)
+		go executor(ctx, &wg, client, endpoint)
 	}
 
 	// wait for signal
